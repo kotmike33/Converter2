@@ -2,6 +2,7 @@ package UI;
 
 import Config.ConfigurationManager;
 import Converting.Converting;
+import Uploader.GoogleDriveUploader;
 
 import java.awt.*;
 import java.math.BigDecimal;
@@ -18,6 +19,7 @@ public class AppPage extends JFrame {
     private static JComboBox<String> dropdownInput;
     private static JComboBox<String> dropdownOutput;
     private static JLabel progressText;
+    private static JButton uploadSelectedFolderButton;
 
     public AppPage() {
         super("Converter");
@@ -101,6 +103,29 @@ public class AppPage extends JFrame {
         progressText.setFont(new Font("Arial", Font.BOLD, 20));
         gbc.gridy = 6;
         panel.add(progressText,gbc);
+
+        gbc.gridy = 7;
+        uploadSelectedFolderButton = new JButton();
+        uploadSelectedFolderButton.setText("Uploader all files to Google Drive");
+        panel.add(uploadSelectedFolderButton,gbc);
+
+        uploadSelectedFolderButton.addActionListener((e) -> {
+            uploadSelectedFolderButton.setEnabled(false);
+            uploadSelectedFolderButton.setBackground(Color.RED);
+            Thread thread = new Thread(() -> {
+                try {
+                    GoogleDriveUploader uploader =
+                            new GoogleDriveUploader();
+
+                    uploader.uploadFolder(
+                            configurationManager.getConfigValue("input")
+                    );
+                }catch (Exception exception){
+                    PopupFrame.createPopup("Failed Upload");
+                }
+            });
+            thread.start();
+        });
 
         this.add(panel);
         this.setVisible(true);
