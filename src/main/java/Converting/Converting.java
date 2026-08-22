@@ -69,7 +69,7 @@ public class Converting {
                 }
             }
 
-            AppPage.updateProgress(numberOfFiles-requiredExtensionFiles.length,numberOfFiles,timeLeft);
+            AppPage.updateProgress(numberOfFiles-requiredExtensionFiles.length,numberOfFiles,timeLeft,"Converting");
 
             File currentFile = requiredExtensionFiles[0];
             String currentFilePath = currentFile.getAbsolutePath();
