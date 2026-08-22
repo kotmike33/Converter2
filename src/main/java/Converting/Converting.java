@@ -42,7 +42,7 @@ public class Converting {
             if (requiredExtensionFiles == null || requiredExtensionFiles.length == 0) {
                 Debug.functionDebug("All files were processed.");
                 System.out.println("Done.");
-                PopupFrame.createPopup("Done.");
+                PopupFrame.createPopup("Converting Done.");
                 AppPage.enableStartOption();
                 timeLeft="";
                 AppPage.clearProgress();

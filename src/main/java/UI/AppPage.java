@@ -30,6 +30,8 @@ public class AppPage extends JFrame {
 
     private static JLabel progressText;
 
+    private static JCheckBox autoUploadCheckBox;
+
     private static boolean operationRunning = false;
     private static boolean formatsConflict = false;
 
@@ -211,10 +213,33 @@ public class AppPage extends JFrame {
 
                         try {
 
+                            // =========================
+                            // CONVERT
+                            // =========================
+
                             Converting converting =
                                     new Converting();
 
                             converting.prepareCommandsForCmd();
+
+                            // =========================
+                            // AUTO UPLOAD
+                            // =========================
+
+                            if (autoUploadCheckBox.isSelected()) {
+
+                                System.out.println(
+                                        "Starting automatic Google Drive upload..."
+                                );
+
+                                GoogleDriveUploader uploader =
+                                        new GoogleDriveUploader();
+
+                                uploader.uploadFolder(
+                                        configurationManager
+                                                .getConfigValue("input")
+                                );
+                            }
 
                         } catch (Exception exception) {
 
@@ -241,6 +266,39 @@ public class AppPage extends JFrame {
         );
 
         // =========================
+// AUTO UPLOAD TO GOOGLE DRIVE
+// =========================
+
+        autoUploadCheckBox =
+                new JCheckBox(
+                        "Auto upload to Google Drive after conversion"
+                );
+
+        autoUploadCheckBox.setSelected(
+                Boolean.parseBoolean(
+                        this.configurationManager
+                                .getConfigValue("autoUpload")
+                )
+        );
+
+        autoUploadCheckBox.addActionListener((e) -> {
+
+            this.configurationManager.setConfigValue(
+                    "autoUpload",
+                    String.valueOf(
+                            autoUploadCheckBox.isSelected()
+                    )
+            );
+        });
+
+        gbc.gridy = 6;
+
+        panel.add(
+                autoUploadCheckBox,
+                gbc
+        );
+
+        // =========================
         // PROGRESS
         // =========================
 
@@ -261,7 +319,7 @@ public class AppPage extends JFrame {
                 )
         );
 
-        gbc.gridy = 6;
+        gbc.gridy = 7;
 
         panel.add(
                 progressText,
@@ -272,7 +330,7 @@ public class AppPage extends JFrame {
         // UPLOAD BUTTON
         // =========================
 
-        gbc.gridy = 7;
+        gbc.gridy = 8;
 
         uploadSelectedFolderButton =
                 new JButton(

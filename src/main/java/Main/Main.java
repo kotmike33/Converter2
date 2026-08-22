@@ -7,7 +7,6 @@ package Main;
 
 import Debug.Debug;
 import UI.AppPage;
-import UI.PopupFrame;
 
 public class Main {
     public Main() {

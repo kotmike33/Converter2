@@ -17,12 +17,21 @@ public class PopupFrame {
 
     public static void createPopup(String labelText) {
         JFrame popupFrame = new JFrame("Popup");
+
         JLabel label = new JLabel(labelText);
-        label.setHorizontalAlignment(0);
+        label.setHorizontalAlignment(SwingConstants.CENTER);
+
         popupFrame.add(label);
-        popupFrame.setSize(300, 100);
-        popupFrame.setLocationRelativeTo((Component)null);
-        popupFrame.setDefaultCloseOperation(2);
+
+        popupFrame.pack();
+
+        popupFrame.setSize(
+                popupFrame.getWidth() + 40,
+                popupFrame.getHeight() + 20
+        );
+
+        popupFrame.setLocationRelativeTo(null);
+        popupFrame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         popupFrame.setVisible(true);
     }
     public static void createLinkPopup(String link) {

@@ -50,7 +50,7 @@ public class GoogleDriveUploader {
         GoogleClientSecrets clientSecrets =
                 GoogleClientSecrets.load(
                         JSON_FACTORY,
-                        new FileReader("credentials.json")
+                        new FileReader("C:/Users/kotmi/Documents/GitHub/credentials.json")
                 );
 
         GoogleAuthorizationCodeFlow flow =
@@ -112,6 +112,10 @@ public class GoogleDriveUploader {
             throw new IllegalArgumentException(
                     "Path is not a folder: " + folderPath
             );
+        }
+
+        if(getFolderSizeBytes(folder)>getAvailableDriveBytes()){
+            throw new Exception("Not enough space on Google Drive!");
         }
 
         // Получаем название папки
@@ -341,5 +345,36 @@ public class GoogleDriveUploader {
                 .execute();
 
         return "https://drive.google.com/drive/folders/" + folderId;
+    }
+
+    private long getAvailableDriveBytes() throws Exception {
+        var about = driveService.about()
+                .get()
+                .setFields("storageQuota(limit,usage)")
+                .execute();
+
+        Long limit = about.getStorageQuota().getLimit();
+        Long usage = about.getStorageQuota().getUsage();
+
+        if (limit == null) {
+            return Long.MAX_VALUE;
+        }
+
+        return limit - usage;
+    }
+
+    private long getFolderSizeBytes(Path folder) throws Exception {
+        try (var files = Files.walk(folder)) {
+            return files
+                    .filter(Files::isRegularFile)
+                    .mapToLong(path -> {
+                        try {
+                            return Files.size(path);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    })
+                    .sum();
+        }
     }
 }
