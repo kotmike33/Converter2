@@ -18,4 +18,6 @@ Settings are stored in `%USERPROFILE%\\.converter2\\config.properties`.
 - Google Drive upload is optional and disabled by default.
 - After a file is converted successfully and the output is verified, its original is deleted. Files that fail conversion are kept.
 - Conversion progress shows an estimated finish time. You can stop a batch; completed files stay converted, while the active and remaining originals are kept.
+- Each batch is saved in a sibling folder named `<source>-converted-<format>`. If that folder exists, the app uses the next free numbered name, such as `-1` or `-2`.
+- The results-folder path in the window is clickable. It opens the latest results folder, or creates and opens the next destination so the next batch can use it.
 - Google Drive uploads include every file under the results folder, including nested subfolders. Nested paths are retained in each uploaded file name.

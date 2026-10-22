@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -47,6 +48,16 @@ public class Converting {
             String outputExtension,
             ProgressListener progressListener
     ) throws IOException {
+        return convertFolder(inputDirectory, inputExtension, outputExtension, progressListener, null);
+    }
+
+    public ConversionResult convertFolder(
+            Path inputDirectory,
+            String inputExtension,
+            String outputExtension,
+            ProgressListener progressListener,
+            Path outputReservation
+    ) throws IOException {
         Path input = inputDirectory.toAbsolutePath().normalize();
         if (!Files.isDirectory(input)) {
             throw new IOException("The selected folder does not exist or is not accessible: " + input);
@@ -58,12 +69,13 @@ public class Converting {
             throw new IllegalArgumentException("The input and output formats must be different.");
         }
 
-        Path output = outputDirectoryFor(input);
+        Path output = outputDirectoryFor(input, to);
+        Path outputForScan = output;
         List<Path> files;
         try (Stream<Path> walk = Files.walk(input)) {
             files = walk
                     .filter(Files::isRegularFile)
-                    .filter(path -> !path.startsWith(output))
+                    .filter(path -> !path.startsWith(outputForScan))
                     .filter(path -> hasExtension(path, from))
                     .sorted(Comparator.comparing(path -> input.relativize(path).toString(), String.CASE_INSENSITIVE_ORDER))
                     .toList();
@@ -71,6 +83,10 @@ public class Converting {
 
         if (!files.isEmpty()) {
             verifyImageMagick();
+            if (cancelled.get()) {
+                return new ConversionResult(files.size(), 0, List.of(), output, true);
+            }
+            output = reserveOutputDirectory(input, to, outputReservation);
         }
 
         List<String> failures = new ArrayList<>();
@@ -122,12 +138,90 @@ public class Converting {
         }
     }
 
-    public static Path outputDirectoryFor(Path inputDirectory) {
+    public static Path outputDirectoryFor(Path inputDirectory, String outputExtension) {
         Path input = inputDirectory.toAbsolutePath().normalize();
+        String extension = normalizeExtension(outputExtension).substring(1);
+        String baseName = outputBaseName(input, extension);
+        Path parent = outputParent(input);
+        int suffix = 0;
+        while (true) {
+            String name = suffix == 0 ? baseName : baseName + "-" + suffix;
+            Path candidate = parent.resolve(name);
+            if (!Files.exists(candidate)) return candidate;
+            suffix++;
+        }
+    }
+
+    public static List<Path> existingOutputDirectoriesFor(Path inputDirectory, String outputExtension) {
+        Path input = inputDirectory.toAbsolutePath().normalize();
+        String extension = normalizeExtension(outputExtension).substring(1);
+        String baseName = outputBaseName(input, extension);
+        Path parent = outputParent(input);
+        try (Stream<Path> children = Files.list(parent)) {
+            return children
+                    .filter(Files::isDirectory)
+                    .filter(path -> outputSequence(path.getFileName().toString(), baseName) >= 0)
+                    .sorted(Comparator.comparingInt(path -> outputSequence(path.getFileName().toString(), baseName)))
+                    .toList();
+        } catch (IOException exception) {
+            return List.of();
+        }
+    }
+
+    private static Path reserveOutputDirectory(Path input, String extension, Path reservation) throws IOException {
+        String baseName = outputBaseName(input, extension.substring(1));
+        Path parent = outputParent(input);
+        if (reservation != null) {
+            Path normalizedReservation = reservation.toAbsolutePath().normalize();
+            if (normalizedReservation.getParent() != null
+                    && normalizedReservation.getParent().equals(parent)
+                    && outputSequence(normalizedReservation.getFileName().toString(), baseName) >= 0
+                    && Files.isDirectory(normalizedReservation)
+                    && isEmptyDirectory(normalizedReservation)) {
+                return normalizedReservation;
+            }
+        }
+        int suffix = 0;
+        while (true) {
+            String name = suffix == 0 ? baseName : baseName + "-" + suffix;
+            Path candidate = parent.resolve(name);
+            try {
+                Files.createDirectory(candidate);
+                return candidate;
+            } catch (FileAlreadyExistsException exception) {
+                suffix++;
+            }
+        }
+    }
+
+    private static boolean isEmptyDirectory(Path directory) {
+        try (Stream<Path> children = Files.list(directory)) {
+            return children.findAny().isEmpty();
+        } catch (IOException exception) {
+            return false;
+        }
+    }
+
+    private static String outputBaseName(Path input, String extension) {
         Path folderName = input.getFileName();
-        return folderName == null
-                ? input.resolve("converted")
-                : input.resolveSibling(folderName + "-converted");
+        return (folderName == null ? "converted" : folderName.toString()) + "-converted-" + extension;
+    }
+
+    private static Path outputParent(Path input) {
+        Path parent = input.getParent();
+        return parent == null ? input : parent;
+    }
+
+    private static int outputSequence(String candidateName, String baseName) {
+        if (candidateName.equals(baseName)) return 0;
+        String prefix = baseName + "-";
+        if (!candidateName.startsWith(prefix)) return -1;
+        try {
+            int suffix = Integer.parseInt(candidateName.substring(prefix.length()));
+            return suffix > 0 ? suffix : -1;
+        } catch (NumberFormatException exception) {
+            return -1;
+        }
     }
 
     private void convertOne(Path source, Path destination, String outputExtension) throws Exception {

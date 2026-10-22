@@ -19,16 +19,19 @@ import javax.swing.JProgressBar;
 import javax.swing.JTextField;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
-import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Cursor;
+import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.GridLayout;
 import java.awt.Insets;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.io.File;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -36,16 +39,18 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.Objects;
 
 public class AppPage extends JFrame {
-    private static final Color BACKGROUND = new Color(16, 19, 24);
-    private static final Color SURFACE = new Color(25, 30, 37);
-    private static final Color SURFACE_ALT = new Color(31, 37, 46);
-    private static final Color BORDER = new Color(48, 57, 69);
-    private static final Color TEXT = new Color(239, 242, 246);
-    private static final Color MUTED = new Color(145, 155, 169);
+    private static final Color BACKGROUND = new Color(31, 34, 38);
+    private static final Color SURFACE = new Color(43, 48, 54);
+    private static final Color SURFACE_ALT = new Color(55, 62, 69);
+    private static final Color BORDER = new Color(73, 82, 91);
+    private static final Color TEXT = new Color(244, 246, 248);
+    private static final Color MUTED = new Color(178, 185, 193);
     private static final Color ACCENT = new Color(190, 242, 105);
     private static final Color ACCENT_TEXT = new Color(23, 30, 18);
     private static final Color STOP_ACCENT = new Color(255, 132, 119);
@@ -66,15 +71,16 @@ public class AppPage extends JFrame {
     private final JButton uploadButton = new JButton("↗   Upload ready results to Google Drive");
     private final JCheckBox autoUploadCheckBox = new JCheckBox("Auto-upload to Google Drive after conversion");
     private final JPanel autoUploadPanel = new JPanel(new BorderLayout());
-    private final JLabel statusBadge = new JLabel("READY", SwingConstants.CENTER);
     private final JLabel progressText = new JLabel("Converted originals are removed after each successful file.");
     private final JLabel outputPathHint = new JLabel("Choose a source folder to see the output location.");
+    private final JLabel outputFolderLabel = new JLabel("NEXT RESULTS FOLDER · CLICK TO OPEN");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
-    private final Timer activityTimer = new Timer(350, event -> animateActivity());
     private volatile Converting activeConverter;
+    private Path displayedOutputDirectory;
+    private Path preparedOutputDirectory;
+    private String preparedForInput;
+    private String preparedForFormat;
     private boolean conversionActive;
-    private String activityLabel = "WORKING";
-    private int activityFrame;
     private boolean operationRunning;
     private boolean formatsConflict;
 
@@ -102,60 +108,11 @@ public class AppPage extends JFrame {
         setSize(900, 700);
         setLocationRelativeTo(null);
 
-        JPanel root = new JPanel(new BorderLayout(0, 28));
+        JPanel root = new JPanel(new BorderLayout());
         root.setBackground(BACKGROUND);
-        root.setBorder(new EmptyBorder(28, 34, 26, 34));
-        root.add(buildHeader(), BorderLayout.NORTH);
+        root.setBorder(new EmptyBorder(24, 34, 26, 34));
         root.add(buildContent(), BorderLayout.CENTER);
         setContentPane(root);
-    }
-
-    private JPanel buildHeader() {
-        JPanel header = new JPanel(new BorderLayout());
-        header.setOpaque(false);
-
-        JPanel identity = new JPanel(new BorderLayout(14, 0));
-        identity.setOpaque(false);
-        JLabel mark = new JLabel("C", SwingConstants.CENTER);
-        mark.setOpaque(true);
-        mark.setBackground(ACCENT);
-        mark.setForeground(ACCENT_TEXT);
-        mark.setFont(new Font("Segoe UI", Font.BOLD, 21));
-        mark.setPreferredSize(new Dimension(46, 46));
-        mark.setBorder(BorderFactory.createLineBorder(ACCENT, 1, true));
-
-        JPanel name = new JPanel();
-        name.setOpaque(false);
-        name.setLayout(new BoxLayout(name, BoxLayout.Y_AXIS));
-        JLabel title = new JLabel("CONVERTER STUDIO");
-        title.setForeground(TEXT);
-        title.setFont(new Font("Segoe UI", Font.BOLD, 16));
-        JLabel subtitle = new JLabel("A precise workspace for your images");
-        subtitle.setForeground(MUTED);
-        subtitle.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        name.add(title);
-        name.add(Box.createVerticalStrut(4));
-        name.add(subtitle);
-        identity.add(mark, BorderLayout.WEST);
-        identity.add(name, BorderLayout.CENTER);
-        header.add(identity, BorderLayout.WEST);
-
-        JPanel status = new JPanel(new BorderLayout(8, 0));
-        status.setOpaque(true);
-        status.setBackground(SURFACE);
-        status.setBorder(new CompoundBorder(
-                BorderFactory.createLineBorder(BORDER, 1, true),
-                new EmptyBorder(9, 12, 9, 12)));
-        JLabel dot = new JLabel("●");
-        dot.setForeground(ACCENT);
-        dot.setFont(new Font("Segoe UI", Font.BOLD, 10));
-        statusBadge.setForeground(new Color(205, 214, 224));
-        statusBadge.setFont(new Font("Segoe UI", Font.BOLD, 10));
-        statusBadge.setBorder(null);
-        status.add(dot, BorderLayout.WEST);
-        status.add(statusBadge, BorderLayout.CENTER);
-        header.add(status, BorderLayout.EAST);
-        return header;
     }
 
     private JPanel buildContent() {
@@ -169,20 +126,6 @@ public class AppPage extends JFrame {
         JPanel card = createCard();
         card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
 
-        JLabel eyebrow = smallLabel("WORKSPACE  /  IMAGE CONVERSION");
-        JLabel heading = new JLabel("Convert your images.");
-        heading.setForeground(TEXT);
-        heading.setFont(new Font("Segoe UI", Font.BOLD, 26));
-        JLabel description = new JLabel("Choose a folder, set the format, and let the batch run.");
-        description.setForeground(MUTED);
-        description.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-
-        card.add(eyebrow);
-        card.add(Box.createVerticalStrut(10));
-        card.add(heading);
-        card.add(Box.createVerticalStrut(6));
-        card.add(description);
-        card.add(Box.createVerticalStrut(28));
         card.add(sectionHeading("SOURCE FOLDER", "All matching images in nested folders are included."));
         card.add(Box.createVerticalStrut(12));
         card.add(buildFolderPicker());
@@ -240,12 +183,11 @@ public class AppPage extends JFrame {
         JPanel footer = new JPanel(new BorderLayout(0, 7));
         footer.setOpaque(false);
         footer.add(createSeparator(), BorderLayout.NORTH);
-        JLabel destination = new JLabel("RESULTS FOLDER");
-        destination.setForeground(MUTED);
-        destination.setFont(new Font("Segoe UI", Font.BOLD, 10));
+        outputFolderLabel.setForeground(MUTED);
+        outputFolderLabel.setFont(new Font("Segoe UI", Font.BOLD, 10));
         JPanel destinationInfo = new JPanel(new BorderLayout(0, 6));
         destinationInfo.setOpaque(false);
-        destinationInfo.add(destination, BorderLayout.NORTH);
+        destinationInfo.add(outputFolderLabel, BorderLayout.NORTH);
         outputPathHint.setForeground(new Color(207, 215, 226));
         outputPathHint.setFont(new Font("Segoe UI", Font.PLAIN, 12));
         destinationInfo.add(outputPathHint, BorderLayout.CENTER);
@@ -403,6 +345,7 @@ public class AppPage extends JFrame {
         });
         dropdownOutput.addActionListener(event -> {
             persistSetting("outputFormat", (String) dropdownOutput.getSelectedItem());
+            updateOutputHint();
             refreshState();
         });
         autoUploadCheckBox.addActionListener(event -> {
@@ -418,6 +361,13 @@ public class AppPage extends JFrame {
         startButton.addActionListener(event -> startConversion());
         stopButton.addActionListener(event -> stopConversion());
         uploadButton.addActionListener(event -> uploadConvertedFiles());
+        outputPathHint.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        outputPathHint.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent event) {
+                openOutputDirectory();
+            }
+        });
         updateOutputHint();
     }
 
@@ -458,6 +408,7 @@ public class AppPage extends JFrame {
         String inputFormat = (String) dropdownInput.getSelectedItem();
         String outputFormat = (String) dropdownOutput.getSelectedItem();
         boolean uploadAfterConversion = autoUploadCheckBox.isSelected();
+        Path reservation = matchesPreparedOutput(selectedPath, outputFormat) ? preparedOutputDirectory : null;
         if (selectedPath.isBlank()) {
             JOptionPane.showMessageDialog(this, "Choose a source folder first.", "No Folder Selected", JOptionPane.INFORMATION_MESSAGE);
             return;
@@ -473,7 +424,17 @@ public class AppPage extends JFrame {
                 Converting.ConversionResult result = converter.convertFolder(
                         java.nio.file.Path.of(selectedPath), inputFormat, outputFormat,
                         (completed, total, currentFile) -> updateProgress(
-                                completed, total, estimatedFinish(conversionStarted, completed, total), currentFile));
+                                completed, total, estimatedFinish(conversionStarted, completed, total), currentFile),
+                        reservation);
+
+                if (Files.isDirectory(result.outputDirectory())) {
+                    SwingUtilities.invokeLater(() -> {
+                        preparedOutputDirectory = result.outputDirectory();
+                        preparedForInput = selectedPath;
+                        preparedForFormat = outputFormat;
+                        updateOutputHint();
+                    });
+                }
 
                 SwingUtilities.invokeLater(() -> {
                     conversionActive = false;
@@ -487,7 +448,7 @@ public class AppPage extends JFrame {
                 } else if (!result.failures().isEmpty()) {
                     showPopup(buildFailureSummary(result));
                 } else if (uploadAfterConversion) {
-                    setStatus("UPLOADING");
+                    SwingUtilities.invokeLater(() -> progressText.setText("Uploading converted images to Google Drive…"));
                     try {
                         new GoogleDriveUploader().uploadFolder(result.outputDirectory().toString());
                         showPopup("Conversion and upload completed.\nResults saved to:\n" + result.outputDirectory());
@@ -514,11 +475,12 @@ public class AppPage extends JFrame {
             JOptionPane.showMessageDialog(this, "Choose a source folder first.", "No Folder Selected", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        String outputPath = Converting.outputDirectoryFor(java.nio.file.Path.of(selectedPath)).toString();
-        if (!hasReadyResults(selectedPath)) {
+        java.nio.file.Path outputDirectory = findReadyOutputDirectory(selectedPath, (String) dropdownOutput.getSelectedItem());
+        if (outputDirectory == null) {
             JOptionPane.showMessageDialog(this, "Convert some images first. Ready results will appear here.", "No Results Ready", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
+        String outputPath = outputDirectory.toString();
 
         setBusy(true, "Connecting to Google Drive…");
         Thread worker = new Thread(() -> {
@@ -546,14 +508,7 @@ public class AppPage extends JFrame {
         progressBar.setVisible(busy);
         progressText.setVisible(busy);
         stopButton.setEnabled(busy && conversionActive);
-        if (busy) {
-            activityLabel = "WORKING";
-            activityFrame = 0;
-            statusBadge.setText(activityLabel + " ·");
-            activityTimer.start();
-        } else {
-            activityTimer.stop();
-            statusBadge.setText("READY");
+        if (!busy) {
             activeConverter = null;
             conversionActive = false;
             stopButton.setEnabled(false);
@@ -565,16 +520,8 @@ public class AppPage extends JFrame {
         Converting converter = activeConverter;
         if (!conversionActive || converter == null) return;
         stopButton.setEnabled(false);
-        activityLabel = "STOPPING";
-        statusBadge.setText("STOPPING ·");
         progressText.setText("Stopping safely… The active original will be kept.");
         converter.cancel();
-    }
-
-    private void animateActivity() {
-        String[] frames = {"·", "··", "···", "··"};
-        activityFrame = (activityFrame + 1) % frames.length;
-        statusBadge.setText(activityLabel + " " + frames[activityFrame]);
     }
 
     private static String estimatedFinish(Instant started, int completed, int total) {
@@ -593,17 +540,13 @@ public class AppPage extends JFrame {
         });
     }
 
-    private void setStatus(String status) {
-        SwingUtilities.invokeLater(() -> {
-            activityLabel = status;
-            statusBadge.setText(status + " ·");
-        });
-    }
-
     private void refreshState() {
         formatsConflict = Objects.equals(dropdownInput.getSelectedItem(), dropdownOutput.getSelectedItem());
         boolean hasFolder = !inputPathField.getText().trim().isBlank();
-        boolean resultsReady = hasFolder && hasReadyPhotos(inputPathField.getText().trim());
+        java.nio.file.Path readyOutput = hasFolder
+                ? findReadyOutputDirectory(inputPathField.getText().trim(), (String) dropdownOutput.getSelectedItem())
+                : null;
+        boolean resultsReady = readyOutput != null;
         startButton.setEnabled(!operationRunning && hasFolder && !formatsConflict);
         uploadButton.setEnabled(!operationRunning && resultsReady);
         uploadButton.setText(resultsReady
@@ -633,18 +576,17 @@ public class AppPage extends JFrame {
         repaint();
     }
 
-    private static boolean hasReadyResults(String input) {
-        try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.walk(
-                Converting.outputDirectoryFor(java.nio.file.Path.of(input)))) {
-            return files.anyMatch(java.nio.file.Files::isRegularFile);
-        } catch (Exception ignored) {
-            return false;
+    private static java.nio.file.Path findReadyOutputDirectory(String input, String outputFormat) {
+        java.util.List<java.nio.file.Path> candidates = Converting.existingOutputDirectoriesFor(
+                java.nio.file.Path.of(input), outputFormat);
+        for (int index = candidates.size() - 1; index >= 0; index--) {
+            if (hasReadyPhotos(candidates.get(index))) return candidates.get(index);
         }
+        return null;
     }
 
-    private static boolean hasReadyPhotos(String input) {
-        try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.walk(
-                Converting.outputDirectoryFor(java.nio.file.Path.of(input)))) {
+    private static boolean hasReadyPhotos(java.nio.file.Path directory) {
+        try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.walk(directory)) {
             return files.filter(java.nio.file.Files::isRegularFile)
                     .map(path -> path.getFileName().toString().toLowerCase(java.util.Locale.ROOT))
                     .anyMatch(name -> IMAGE_EXTENSIONS.stream().anyMatch(name::endsWith));
@@ -653,15 +595,74 @@ public class AppPage extends JFrame {
         }
     }
 
+    private boolean matchesPreparedOutput(String input, String format) {
+        return preparedOutputDirectory != null
+                && Objects.equals(preparedForInput, input)
+                && Objects.equals(preparedForFormat, format);
+    }
+
+    private void openOutputDirectory() {
+        if (displayedOutputDirectory == null) return;
+        Path target = displayedOutputDirectory;
+        try {
+            if (!Files.exists(target)) {
+                try {
+                    Files.createDirectory(target);
+                    preparedOutputDirectory = target;
+                    preparedForInput = inputPathField.getText().trim();
+                    preparedForFormat = (String) dropdownOutput.getSelectedItem();
+                    updateOutputHint();
+                } catch (java.nio.file.FileAlreadyExistsException ignored) {
+                    if (!Files.isDirectory(target)) throw ignored;
+                }
+            }
+            if (!Files.isDirectory(target)) {
+                JOptionPane.showMessageDialog(this, "The results path is not a folder.", "Cannot Open Folder", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (!Desktop.isDesktopSupported()) {
+                JOptionPane.showMessageDialog(this, "File Explorer cannot be opened on this system.", "Cannot Open Folder", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            Desktop.getDesktop().open(target.toFile());
+        } catch (Exception exception) {
+            JOptionPane.showMessageDialog(this, "Could not open the results folder: " + safeMessage(exception),
+                    "Cannot Open Folder", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
     private void updateOutputHint() {
         String input = inputPathField.getText().trim();
         if (input.isBlank()) {
             outputPathHint.setText("Choose a source folder to see the output location.");
+            outputFolderLabel.setText("NEXT RESULTS FOLDER");
+            outputPathHint.setForeground(MUTED);
+            displayedOutputDirectory = null;
         } else {
-            outputPathHint.setText("<html><body style='width: 195px'>"
-                    + Converting.outputDirectoryFor(java.nio.file.Path.of(input)) + "</body></html>");
-            outputPathHint.setToolTipText(Converting.outputDirectoryFor(java.nio.file.Path.of(input)).toString());
+            String format = (String) dropdownOutput.getSelectedItem();
+            if (preparedOutputDirectory != null && !matchesPreparedOutput(input, format)) {
+                preparedOutputDirectory = null;
+                preparedForInput = null;
+                preparedForFormat = null;
+            }
+            Path latestOutput = matchesPreparedOutput(input, format)
+                    ? preparedOutputDirectory
+                    : findReadyOutputDirectory(input, format);
+            displayedOutputDirectory = latestOutput != null
+                    ? latestOutput
+                    : Converting.outputDirectoryFor(Path.of(input), format);
+            outputFolderLabel.setText(latestOutput == null
+                    ? "NEXT RESULTS FOLDER · CLICK TO OPEN"
+                    : "RESULTS FOLDER · CLICK TO OPEN");
+            outputPathHint.setText("<html><body style='width: 195px'><u>"
+                    + escapeHtml(displayedOutputDirectory.toString()) + "</u> &nbsp;↗</body></html>");
+            outputPathHint.setForeground(ACCENT);
+            outputPathHint.setToolTipText("Click to open this folder in File Explorer");
         }
+    }
+
+    private static String escapeHtml(String text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     private static String buildFailureSummary(Converting.ConversionResult result) {
