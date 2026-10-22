@@ -23,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 
 public class GoogleDriveUploader {
@@ -91,23 +92,23 @@ public class GoogleDriveUploader {
     }
 
     /**
-     * Загружает все файлы из указанной папки
-     * в новую папку на Google Drive.
+     * Uploads all files from the specified folder
+     * to a new folder on Google Drive.
      *
-     * @param folderPath путь к папке на компьютере
+     * @param folderPath local folder path
      */
     public void uploadFolder(String folderPath) throws Exception {
 
         Path folder = Path.of(folderPath);
 
-        // Проверяем существование
+        // Check that the folder exists.
         if (!Files.exists(folder)) {
             throw new IllegalArgumentException(
                     "Folder does not exist: " + folderPath
             );
         }
 
-        // Проверяем, что это папка
+        // Check that the path points to a folder.
         if (!Files.isDirectory(folder)) {
             throw new IllegalArgumentException(
                     "Path is not a folder: " + folderPath
@@ -118,7 +119,7 @@ public class GoogleDriveUploader {
             throw new Exception("Not enough space on Google Drive!");
         }
 
-        // Получаем название папки
+        // Get the folder name.
         String folderName = folder.getFileName().toString();
 
         System.out.println(
@@ -129,7 +130,7 @@ public class GoogleDriveUploader {
                 "Google Drive folder: " + folderName
         );
 
-        // Создаём папку на Google Drive
+        // Create a folder on Google Drive.
         String googleFolderId =
                 findGoogleDriveFolder(folderName);
 
@@ -159,14 +160,15 @@ public class GoogleDriveUploader {
                         + googleFolderId
         );
 
-        // Загружаем файлы
+        // Upload the files.
 
         int filesUploaded = 0;
         LocalDateTime startTime = LocalDateTime.now();
 
-        try (var files = Files.list(folder)) {
+        try (var files = Files.walk(folder)) {
             var fileList = files
                     .filter(Files::isRegularFile)
+                    .sorted()
                     .toList();
 
             int filesCount = fileList.size();
@@ -175,23 +177,29 @@ public class GoogleDriveUploader {
                     "Files count for upload: " + filesCount
             );
 
+            int filesProcessed = 0;
+            java.util.List<String> failures = new java.util.ArrayList<>();
             for (var file : fileList) {
                 try {
-                    uploadFile(file, googleFolderId);
+                    String driveName = folder.relativize(file).toString().replace('\\', '/');
+                    uploadFile(file, googleFolderId, driveName);
                     filesUploaded++;
-
-                    updateProgressBar(
-                            startTime,
-                            filesUploaded,
-                            filesCount
-                    );
-
                 } catch (Exception e) {
-                    PopupFrame.createPopup(
-                            "Failed to upload: " + file
-                    );
+                    failures.add(folder.relativize(file) + ": " + (e.getMessage() == null ? "upload failed" : e.getMessage()));
                     e.printStackTrace();
+                } finally {
+                    filesProcessed++;
+                    updateProgressBar(startTime, filesProcessed, filesCount);
                 }
+            }
+            if (!failures.isEmpty()) {
+                StringBuilder message = new StringBuilder("Uploaded ")
+                        .append(filesUploaded).append(" of ").append(filesCount)
+                        .append(" files. Failed uploads: ").append(failures.size());
+                for (int index = 0; index < Math.min(5, failures.size()); index++) {
+                    message.append("\n\n• ").append(failures.get(index));
+                }
+                PopupFrame.createPopup(message.toString());
             }
         }
 
@@ -228,7 +236,7 @@ public class GoogleDriveUploader {
     }
 
     /**
-     * Создаёт папку на Google Drive.
+     * Creates a folder on Google Drive.
      */
     private String createGoogleDriveFolder(
             String folderName
@@ -253,11 +261,12 @@ public class GoogleDriveUploader {
     }
 
     /**
-     * Загружает один файл в указанную папку Google Drive.
+     * Uploads one file to the specified Google Drive folder.
      */
     private void uploadFile(
             Path path,
-            String googleFolderId
+            String googleFolderId,
+            String driveName
     ) throws Exception {
 
         String mimeType =
@@ -270,11 +279,9 @@ public class GoogleDriveUploader {
         com.google.api.services.drive.model.File metadata =
                 new com.google.api.services.drive.model.File();
 
-        metadata.setName(
-                path.getFileName().toString()
-        );
+        metadata.setName(driveName);
 
-        // Помещаем файл в созданную папку
+        // Place the file in the created folder.
         metadata.setParents(
                 Collections.singletonList(
                         googleFolderId
@@ -317,18 +324,9 @@ public class GoogleDriveUploader {
                     .divide(new BigDecimal(filesUploaded), 10, RoundingMode.HALF_UP);
             BigDecimal secondsLeft = secondsPerFile.multiply(new BigDecimal(filesCount-filesUploaded));
             Duration d = Duration.ofSeconds(secondsLeft.longValue());
-            String timeLeft="";
-            long h = d.toHours();
-            long m = d.toMinutesPart();
-            long s = d.toSecondsPart();
-            if(h==0 && m!=0){
-                timeLeft = String.format("%dm %ds", m, s);
-            } else if (h == 0) {
-                timeLeft = String.format("%ds", s);
-            }else {
-                timeLeft = String.format("%dh %dm %ds", h, m, s);
-            }
-            AppPage.updateProgress(filesUploaded,filesCount,timeLeft,"Uploading");
+            String estimatedFinish = "Estimated finish " + LocalDateTime.now().plus(d)
+                    .format(DateTimeFormatter.ofPattern("HH:mm"));
+            AppPage.updateProgress(filesUploaded,filesCount,estimatedFinish,"Uploading");
         }
     }
 

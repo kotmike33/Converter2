@@ -16,23 +16,21 @@ public class PopupFrame {
     }
 
     public static void createPopup(String labelText) {
-        JFrame popupFrame = new JFrame("Popup");
+        JTextArea message = new JTextArea(labelText == null ? "An unknown error occurred." : labelText);
+        message.setEditable(false);
+        message.setFocusable(false);
+        message.setLineWrap(true);
+        message.setWrapStyleWord(true);
+        message.setOpaque(false);
+        message.setColumns(55);
+        message.setRows(Math.min(14, Math.max(3, labelText == null ? 3 : labelText.split("\\R").length + 1)));
 
-        JLabel label = new JLabel(labelText);
-        label.setHorizontalAlignment(SwingConstants.CENTER);
-
-        popupFrame.add(label);
-
-        popupFrame.pack();
-
-        popupFrame.setSize(
-                popupFrame.getWidth() + 40,
-                popupFrame.getHeight() + 20
+        JOptionPane.showMessageDialog(
+                null,
+                new JScrollPane(message),
+                "Converter",
+                JOptionPane.INFORMATION_MESSAGE
         );
-
-        popupFrame.setLocationRelativeTo(null);
-        popupFrame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        popupFrame.setVisible(true);
     }
     public static void createLinkPopup(String link) {
         JFrame popupFrame = new JFrame("Popup");

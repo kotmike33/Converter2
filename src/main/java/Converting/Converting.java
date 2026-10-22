@@ -1,188 +1,297 @@
 package Converting;
 
-import Config.ConfigurationManager;
-import Debug.Debug;
-import UI.AppPage;
-import UI.PopupFrame;
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
 
 public class Converting {
-    private final Object lock = new Object();
-    String outputFormat;
-    String inputFormat;
-    File directory;
-    String previousFilePath = "";
-    private int numberOfFiles;
-    private String timeLeft="";
+    private static final Duration PROCESS_TIMEOUT = Duration.ofMinutes(30);
+    private static final int MAX_ERROR_TEXT = 6000;
+    private final AtomicBoolean cancelled = new AtomicBoolean();
+    private final Object cancellationLock = new Object();
+    private volatile Process currentProcess;
 
-    public Converting() {
-        ConfigurationManager configurationManager = new ConfigurationManager("config");
-        this.outputFormat = configurationManager.getConfigValue("outputFormat");
-        this.inputFormat = configurationManager.getConfigValue("inputFormat");
+    @FunctionalInterface
+    public interface ProgressListener {
+        void onProgress(int completed, int total, String currentFile);
     }
 
-    public void prepareCommandsForCmd() {
-        ConfigurationManager configurationManager = new ConfigurationManager("config");
-        this.directory = new File(configurationManager.getConfigValue("input"));
-        numberOfFiles = this.directory.listFiles((dir, name) -> name.toLowerCase().endsWith(inputFormat)).length;
+    public record ConversionResult(
+            int total,
+            int converted,
+            List<String> failures,
+            Path outputDirectory,
+            boolean cancelled
+    ) {
+        public boolean isSuccessful() {
+            return !cancelled && total > 0 && failures.isEmpty() && converted == total;
+        }
+    }
 
-        LocalDateTime startTime = LocalDateTime.now();
-        int filesConverted = 0;
-        while(true) {
-            Debug.functionDebug("Starting converting cycle");
-            File[] requiredExtensionFiles = this.directory.listFiles((dir, name) -> name.toLowerCase().endsWith(inputFormat));
-            Debug.functionDebug(inputFormat);
-            if (requiredExtensionFiles == null || requiredExtensionFiles.length == 0) {
-                Debug.functionDebug("All files were processed.");
-                System.out.println("Done.");
-                PopupFrame.createPopup("Converting Done.");
-                AppPage.enableStartOption();
-                timeLeft="";
-                AppPage.clearProgress();
-                break;
-            }
-
-            if(filesConverted>0){
-                long secondsPassed = Duration.between(startTime, LocalDateTime.now()).getSeconds();
-                BigDecimal secondsPerFile = new BigDecimal(secondsPassed)
-                        .divide(new BigDecimal(filesConverted), 10, RoundingMode.HALF_UP);
-                BigDecimal secondsLeft = secondsPerFile.multiply(new BigDecimal(requiredExtensionFiles.length));
-                Duration d = Duration.ofSeconds(secondsLeft.longValue());
-
-                long h = d.toHours();
-                long m = d.toMinutesPart();
-                long s = d.toSecondsPart();
-
-                if(h==0 && m!=0){
-                    timeLeft = String.format("%dm %ds", m, s);
-                } else if (h == 0) {
-                    timeLeft = String.format("%ds", s);
-                }else {
-                    timeLeft = String.format("%dh %dm %ds", h, m, s);
-                }
-            }
-
-            AppPage.updateProgress(numberOfFiles-requiredExtensionFiles.length,numberOfFiles,timeLeft,"Converting");
-
-            File currentFile = requiredExtensionFiles[0];
-            String currentFilePath = currentFile.getAbsolutePath();
-            if (this.previousFilePath.equals(currentFilePath)) {
-                Debug.functionDebug("PREVIOUS FILE IS MET");
-                this.deleteFile(currentFile);
-                System.out.println("ATTEMPTED TO DELETE");
-            } else {
-                if (!this.executeCmdCommand(this.createConvertingCommand(currentFile).toString())) {
-                    Debug.functionDebug("callback is not good :<");
-                    timeLeft="";
-                    AppPage.clearProgress();
-                    break;
-                }
-
-                this.deleteFile(currentFile);
-                this.previousFilePath = currentFilePath;
-            }
-            filesConverted++;
-
-            Debug.functionDebug("Cycle ended");
+    public ConversionResult convertFolder(
+            Path inputDirectory,
+            String inputExtension,
+            String outputExtension,
+            ProgressListener progressListener
+    ) throws IOException {
+        Path input = inputDirectory.toAbsolutePath().normalize();
+        if (!Files.isDirectory(input)) {
+            throw new IOException("The selected folder does not exist or is not accessible: " + input);
         }
 
-    }
-
-    private StringBuilder createConvertingCommand(File imageFile) {
-        String result = imageFile.getName().toLowerCase().replace(inputFormat, this.outputFormat);
-        System.out.println(result);
-        System.out.println(this.outputFormat);
-        StringBuilder command = new StringBuilder();
-        command.append("magick ");
-        command.append(imageFile.getAbsolutePath()).append(" ");
-        command.append("-colorspace sRGB ");
-        command.append("-auto-level ");
-        command.append("-modulate 100,130 ");
-        command.append("-auto-orient ");
-        command.append(result);
-        Debug.functionDebug("commandBuilder: \n" + command);
-        return command;
-    }
-
-    private void deleteFile(File imageFile) {
-        if (imageFile.exists()) {
-            imageFile.delete();
+        String from = normalizeExtension(inputExtension);
+        String to = normalizeExtension(outputExtension);
+        if (from.equalsIgnoreCase(to)) {
+            throw new IllegalArgumentException("The input and output formats must be different.");
         }
 
-    }
+        Path output = outputDirectoryFor(input);
+        List<Path> files;
+        try (Stream<Path> walk = Files.walk(input)) {
+            files = walk
+                    .filter(Files::isRegularFile)
+                    .filter(path -> !path.startsWith(output))
+                    .filter(path -> hasExtension(path, from))
+                    .sorted(Comparator.comparing(path -> input.relativize(path).toString(), String.CASE_INSENSITIVE_ORDER))
+                    .toList();
+        }
 
-    private boolean executeCmdCommand(String command) {
-        synchronized(this.lock) {
-            boolean var14;
+        if (!files.isEmpty()) {
+            verifyImageMagick();
+        }
+
+        List<String> failures = new ArrayList<>();
+        int converted = 0;
+        int completed = 0;
+
+        for (Path source : files) {
+            if (cancelled.get()) break;
+            Path relative = input.relativize(source);
+            Path destination = output.resolve(withExtension(relative, to));
             try {
-                ProcessBuilder processBuilder = new ProcessBuilder(new String[]{"cmd", "/c", command});
-                processBuilder.directory(this.directory);
-                Process process = processBuilder.start();
-                Debug.functionDebug("executeCmdCommand: starting (cmd, /c " + command + ")");
-                BufferedReader inputReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-
-                try {
-                    BufferedReader errorReader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
-
+                convertOne(source, destination, to);
+                converted++;
+                synchronized (cancellationLock) {
+                    if (cancelled.get()) break;
                     try {
-                        StringBuilder outputBuilder = new StringBuilder();
-
-                        String line;
-                        while((line = inputReader.readLine()) != null) {
-                            outputBuilder.append("Output: ").append(line).append("\n");
-                        }
-
-                        StringBuilder errorBuilder = new StringBuilder();
-
-                        while((line = errorReader.readLine()) != null) {
-                            errorBuilder.append("Error: ").append(line).append("\n");
-                        }
-
-                        int exitCode = process.waitFor();
-                        String output = outputBuilder.toString();
-                        String error = errorBuilder.toString();
-                        System.out.println(output);
-                        System.err.println(error);
-                        boolean callback = exitCode == 0;
-                        Debug.functionDebug("executeCmdCommand.callback: " + callback);
-                        process.destroy();
-                        var14 = callback;
-                    } catch (Throwable var18) {
-                        try {
-                            errorReader.close();
-                        } catch (Throwable var17) {
-                            var18.addSuppressed(var17);
-                        }
-
-                        throw var18;
+                        Files.delete(source);
+                    } catch (IOException exception) {
+                        failures.add(input.relativize(source) + ": converted successfully, but the original could not be deleted: "
+                                + (exception.getMessage() == null ? "access denied" : exception.getMessage()));
                     }
-
-                    errorReader.close();
-                } catch (Throwable var19) {
-                    try {
-                        inputReader.close();
-                    } catch (Throwable var16) {
-                        var19.addSuppressed(var16);
-                    }
-
-                    throw var19;
                 }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Conversion was interrupted.", exception);
+            } catch (Exception exception) {
+                if (cancelled.get()) break;
+                String detail = exception.getMessage();
+                failures.add(input.relativize(source) + ": " + (detail == null ? exception.getClass().getSimpleName() : detail));
+            }
+            completed++;
+            if (progressListener != null) {
+                progressListener.onProgress(completed, files.size(), source.getFileName().toString());
+            }
+        }
 
-                inputReader.close();
-            } catch (InterruptedException | IOException var20) {
-                var20.printStackTrace();
-                Debug.functionDebug("executeCmdCommand: command.contains(\"There are no\")");
-                return false;
+        return new ConversionResult(files.size(), converted, List.copyOf(failures), output, cancelled.get());
+    }
+
+    public void cancel() {
+        Process process;
+        synchronized (cancellationLock) {
+            cancelled.set(true);
+            process = currentProcess;
+        }
+        if (process != null && process.isAlive()) {
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
+            process.destroyForcibly();
+        }
+    }
+
+    public static Path outputDirectoryFor(Path inputDirectory) {
+        Path input = inputDirectory.toAbsolutePath().normalize();
+        Path folderName = input.getFileName();
+        return folderName == null
+                ? input.resolve("converted")
+                : input.resolveSibling(folderName + "-converted");
+    }
+
+    private void convertOne(Path source, Path destination, String outputExtension) throws Exception {
+        if (cancelled.get()) throw new IOException("Conversion cancelled.");
+        Path parent = destination.getParent();
+        Files.createDirectories(parent);
+        Path temporaryOutput = Files.createTempFile(parent, ".convert-", outputExtension);
+        try {
+            Process process = new ProcessBuilder(
+                    "magick",
+                    source.toString(),
+                    "-auto-orient",
+                    "-colorspace", "sRGB",
+                    "-auto-level",
+                    "-modulate", "100,130",
+                    temporaryOutput.toString()
+            ).redirectErrorStream(true).start();
+            currentProcess = process;
+            if (cancelled.get()) process.destroyForcibly();
+
+            OutputCollector output = new OutputCollector();
+            Thread outputReader = new Thread(() -> readOutput(process, output), "imagemagick-output-reader");
+            outputReader.setDaemon(true);
+            outputReader.start();
+
+            boolean finished;
+            try {
+                finished = process.waitFor(PROCESS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException exception) {
+                forceStop(process);
+                Thread.currentThread().interrupt();
+                throw new IOException("Conversion was interrupted.", exception);
             }
 
-            return var14;
+            if (!finished) {
+                stopProcess(process);
+                outputReader.join(5000);
+                throw new IOException("Conversion timed out after 30 minutes.");
+            }
+            try {
+                outputReader.join(5000);
+            } catch (InterruptedException exception) {
+                forceStop(process);
+                Thread.currentThread().interrupt();
+                throw new IOException("Conversion was interrupted.", exception);
+            }
+
+            if (process.exitValue() != 0) {
+                String message = output.text();
+                throw new IOException("ImageMagick exited with code " + process.exitValue()
+                        + (message.isBlank() ? "." : ": " + message));
+            }
+            if (!Files.isRegularFile(temporaryOutput) || Files.size(temporaryOutput) == 0) {
+                throw new IOException("ImageMagick did not create an output file.");
+            }
+
+            try {
+                Files.move(temporaryOutput, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException exception) {
+                Files.move(temporaryOutput, destination, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            currentProcess = null;
+            Files.deleteIfExists(temporaryOutput);
+        }
+    }
+
+    private void verifyImageMagick() throws IOException {
+        if (cancelled.get()) return;
+        Process process;
+        try {
+            process = new ProcessBuilder("magick", "-version").redirectErrorStream(true).start();
+        } catch (IOException exception) {
+            throw new IOException("ImageMagick was not found. Install it and add the magick command to PATH.", exception);
+        }
+        currentProcess = process;
+        if (cancelled.get()) process.destroyForcibly();
+
+        OutputCollector output = new OutputCollector();
+        Thread outputReader = new Thread(() -> readOutput(process, output), "imagemagick-version-reader");
+        outputReader.setDaemon(true);
+        outputReader.start();
+
+        try {
+            if (!process.waitFor(20, TimeUnit.SECONDS)) {
+                stopProcess(process);
+                throw new IOException("ImageMagick did not respond within 20 seconds.");
+            }
+            outputReader.join(5000);
+            if (process.exitValue() != 0 && !cancelled.get()) {
+                throw new IOException("ImageMagick failed to start: " + output.text());
+            }
+        } catch (InterruptedException exception) {
+            forceStop(process);
+            Thread.currentThread().interrupt();
+            throw new IOException("The ImageMagick check was interrupted.", exception);
+        } finally {
+            currentProcess = null;
+        }
+    }
+
+    private static void readOutput(Process process, OutputCollector output) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line);
+            }
+        } catch (IOException exception) {
+            output.append(exception.getMessage() == null ? "Could not read ImageMagick output." : exception.getMessage());
+        }
+    }
+
+    private static void stopProcess(Process process) throws InterruptedException {
+        process.descendants().forEach(ProcessHandle::destroy);
+        process.destroy();
+        if (!process.waitFor(3, TimeUnit.SECONDS)) {
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
+            process.destroyForcibly();
+            process.waitFor();
+        }
+    }
+
+    private static void forceStop(Process process) {
+        process.descendants().forEach(ProcessHandle::destroyForcibly);
+        process.destroyForcibly();
+    }
+
+    private static String normalizeExtension(String extension) {
+        if (extension == null) {
+            throw new IllegalArgumentException("No file format was selected.");
+        }
+        String normalized = extension.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.matches("\\.[a-z0-9]{2,8}")) {
+            throw new IllegalArgumentException("Invalid file extension: " + extension);
+        }
+        return normalized;
+    }
+
+    private static boolean hasExtension(Path path, String extension) {
+        return path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(extension);
+    }
+
+    private static Path withExtension(Path path, String extension) {
+        String name = path.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        String stem = dot <= 0 ? name : name.substring(0, dot);
+        return path.resolveSibling(stem + extension);
+    }
+
+    private static final class OutputCollector {
+        private final StringBuilder text = new StringBuilder();
+
+        synchronized void append(String line) {
+            if (text.length() > 0) {
+                text.append('\n');
+            }
+            text.append(line);
+            if (text.length() > MAX_ERROR_TEXT) {
+                text.delete(0, text.length() - MAX_ERROR_TEXT);
+            }
+        }
+
+        synchronized String text() {
+            return text.toString().trim();
         }
     }
 }
