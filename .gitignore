@@ -36,3 +36,8 @@ build/
 
 ### Mac OS ###
 .DS_Store
+out/artifacts/Converter2_jar/Converter2.jar
+.idea/artifacts/Converter2_jar.xml
+tokens/StoredCredential
+src/main/resources/config.properties
+src/main/resources/config.properties
